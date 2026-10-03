@@ -1,0 +1,79 @@
+services:
+  # ---------- Web tier ----------
+  web:
+    build: ./nginx
+    container_name: shop-web
+    restart: unless-stopped
+    ports:
+      - "8080:80"
+    volumes:
+      - nginx_logs:/var/log/nginx          # named volume: access/error logs survive restarts
+    depends_on:
+      - api
+    networks:
+      - frontend-net
+
+  # ---------- App tier ----------
+  api:
+    build: ./api
+    container_name: shop-api
+    restart: unless-stopped
+    environment:
+      DB_HOST: db
+      REDIS_HOST: redis
+      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - frontend-net     # talks to web
+      - backend-net      # talks to db and redis
+
+  # ---------- Data tier ----------
+  db:
+    image: postgres:16-alpine
+    container_name: shop-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    volumes:
+      - pgdata:/var/lib/postgresql/data                      # named volume: orders survive `down`
+      - ./db/init.sql:/docker-entrypoint-initdb.d/init.sql:ro  # bind mount: schema + seed products
+    networks:
+      - backend-net
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    container_name: shop-redis
+    restart: unless-stopped
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - redisdata:/data                                       # named volume: carts survive restarts
+    networks:
+      - backend-net
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+networks:
+  frontend-net:            # web <-> api
+  backend-net:             # api <-> db/redis; internal = no internet, not reachable from outside
+    internal: true
+
+volumes:
+  pgdata:
+  redisdata:
+  nginx_logs:

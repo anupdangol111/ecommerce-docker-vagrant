@@ -1,0 +1,159 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>DevOps Shop</title>
+  <style>
+    * { box-sizing: border-box; }
+    body { font-family: system-ui, sans-serif; margin: 0; background: #f6f7f9; color: #222; }
+    header { background: #1f2937; color: #fff; padding: 1rem 1.5rem; display: flex; justify-content: space-between; align-items: center; }
+    header small { opacity: .7; }
+    main { display: grid; grid-template-columns: 1fr 320px; gap: 1.5rem; padding: 1.5rem; max-width: 1100px; margin: 0 auto; }
+    @media (max-width: 800px) { main { grid-template-columns: 1fr; } }
+    h2 { margin-top: 0; }
+    .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: 1rem; }
+    .card { background: #fff; border-radius: 8px; padding: 1rem; box-shadow: 0 1px 3px rgba(0,0,0,.1); text-align: center; }
+    .card .emoji { font-size: 2.5rem; }
+    .card p { font-size: .85rem; color: #666; margin: .25rem 0; }
+    .price { font-weight: 700; }
+    button { background: #2563eb; color: #fff; border: 0; padding: .45rem .9rem; border-radius: 6px; cursor: pointer; }
+    button:disabled { background: #aaa; cursor: not-allowed; }
+    button.secondary { background: #e5e7eb; color: #222; }
+    aside .box { background: #fff; border-radius: 8px; padding: 1rem; box-shadow: 0 1px 3px rgba(0,0,0,.1); margin-bottom: 1rem; }
+    .line { display: flex; justify-content: space-between; align-items: center; padding: .3rem 0; border-bottom: 1px solid #eee; font-size: .9rem; }
+    .qty button { padding: .1rem .5rem; }
+    input { width: 100%; padding: .45rem; margin-bottom: .5rem; }
+    #msg { margin-top: .5rem; font-size: .9rem; }
+    .ok { color: #15803d; } .err { color: #b91c1c; }
+    ul { padding-left: 1.1rem; margin: 0; font-size: .85rem; }
+  </style>
+</head>
+<body>
+  <header>
+    <strong>🛒 DevOps Shop</strong>
+    <small id="status">Checking backend…</small>
+  </header>
+
+  <main>
+    <section>
+      <h2>Products</h2>
+      <div class="grid" id="products"></div>
+    </section>
+
+    <aside>
+      <div class="box">
+        <h2>Your cart</h2>
+        <div id="cart">Empty</div>
+        <p><strong>Total: <span id="total">$0.00</span></strong></p>
+        <button class="secondary" id="clear">Clear</button>
+      </div>
+
+      <div class="box">
+        <h2>Checkout</h2>
+        <input id="name" placeholder="Full name" />
+        <input id="email" type="email" placeholder="Email" />
+        <button id="checkout">Place order</button>
+        <div id="msg"></div>
+      </div>
+
+      <div class="box">
+        <h2>Recent orders</h2>
+        <ul id="orders"></ul>
+      </div>
+    </aside>
+  </main>
+
+  <script>
+    // Anonymous cart id kept in the browser; the cart itself lives in Redis.
+    function newId() {
+      return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, c => {
+        const r = Math.random() * 16 | 0;
+        return (c === 'x' ? r : (r & 0x3 | 0x8)).toString(16);
+      });
+    }
+    let sid = localStorage.getItem('sid');
+    if (!sid) { sid = newId(); localStorage.setItem('sid', sid); }
+
+    const money = c => '$' + (c / 100).toFixed(2);
+    const esc = s => String(s).replace(/[&<>"']/g, ch => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[ch]));
+    const $ = id => document.getElementById(id);
+
+    async function api(path, opts) {
+      const r = await fetch(path, opts);
+      const d = await r.json();
+      if (!r.ok) throw new Error(d.error || 'Request failed');
+      return d;
+    }
+    const post = (path, body) => api(path, {
+      method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body)
+    });
+
+    async function loadHealth() {
+      try {
+        const d = await fetch('/api/health').then(r => r.json());
+        $('status').textContent = `Web → API → DB ${d.database}, Redis ${d.redis}`;
+      } catch { $('status').textContent = 'Backend unreachable'; }
+    }
+
+    async function loadProducts() {
+      const items = await api('/api/products');
+      $('products').innerHTML = items.map(p => `
+        <div class="card">
+          <div class="emoji">${esc(p.emoji)}</div>
+          <strong>${esc(p.name)}</strong>
+          <p>${esc(p.description)}</p>
+          <div class="price">${money(p.price_cents)}</div>
+          <p>${p.stock > 0 ? p.stock + ' in stock' : 'Out of stock'}</p>
+          <button data-id="${p.id}" ${p.stock < 1 ? 'disabled' : ''}>Add to cart</button>
+        </div>`).join('');
+      document.querySelectorAll('#products button').forEach(b =>
+        b.addEventListener('click', () => change(b.dataset.id, 1)));
+    }
+
+    function renderCart(cart) {
+      $('cart').innerHTML = cart.items.length ? cart.items.map(i => `
+        <div class="line">
+          <span>${esc(i.emoji)} ${esc(i.name)}</span>
+          <span class="qty">
+            <button data-id="${i.id}" data-d="-1">-</button>
+            ${i.quantity}
+            <button data-id="${i.id}" data-d="1">+</button>
+          </span>
+          <span>${money(i.line_cents)}</span>
+        </div>`).join('') : 'Empty';
+      $('total').textContent = money(cart.total_cents);
+      document.querySelectorAll('#cart .qty button').forEach(b =>
+        b.addEventListener('click', () => change(b.dataset.id, Number(b.dataset.d))));
+    }
+
+    async function change(id, delta) {
+      renderCart(await post('/api/cart/' + sid, {product_id: Number(id), quantity: delta}));
+    }
+
+    async function loadOrders() {
+      const rows = await api('/api/orders');
+      $('orders').innerHTML = rows.map(o =>
+        `<li>#${o.id} ${esc(o.customer_name)} - ${money(o.total_cents)}</li>`).join('') || '<li>No orders yet</li>';
+    }
+
+    $('clear').addEventListener('click', async () => {
+      renderCart(await api('/api/cart/' + sid, {method: 'DELETE'}));
+    });
+
+    $('checkout').addEventListener('click', async () => {
+      const msg = $('msg');
+      try {
+        const d = await post('/api/checkout', {sid, name: $('name').value, email: $('email').value});
+        msg.className = 'ok';
+        msg.textContent = `Order #${d.order_id} placed: ${money(d.total_cents)}`;
+        renderCart({items: [], total_cents: 0});
+        loadProducts(); loadOrders();
+      } catch (e) { msg.className = 'err'; msg.textContent = e.message; }
+    });
+
+    loadHealth(); loadProducts(); loadOrders();
+    api('/api/cart/' + sid).then(renderCart);
+  </script>
+</body>
+</html>
